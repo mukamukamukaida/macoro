@@ -1,0 +1,356 @@
+'Option Explicit
+
+Private Const LIMIT_CELL_COL As Long = 10000
+Private Const LIMIT_CELL_ROW As Long = 1000000
+Private fso As New FileSystemObject
+Private orgPath As String
+Private fAr()
+
+Private Type Meter_Data
+    startDate As String
+    Name As String                 '計器名
+    dataRng As Range               'データの位置
+End Type
+
+Private MeterData() As Meter_Data  '各計器名および、データの場所
+Private orgBkName As String
+
+Private readBkName As String
+Private orgDateS
+Private orgDateE
+Private isOrgOpen As Boolean
+Private orgSh As Worksheet
+Private errStrPaste As String
+Private successStr() As String
+Private successStrMsg As String
+
+'Private addDayRange As Range    '更新する日付データ
+
+
+'-------------------------------------------------------------------
+'機　能　:  テンプレートファイルの更新
+'作成日　:  2018.5.23
+'更新日　:  2018.6.18
+'作成者　:  Jun Hachiya
+'-------------------------------------------------------------------
+Public Sub ConvertFieldData()
+    Dim myflag As Boolean
+    Dim saveFol As String
+    Dim errStr As String
+    Dim bkName As String, newBkName As String
+    
+    Dim i As Integer
+    
+    
+        errStr = ""
+        errStrPaste = ""
+        ReDim successStr(0 To 0)
+        With ThisWorkbook.Sheets("EXE")
+            orgPath = .Range("C2").Value
+            
+            orgDateS = .Range("C6").Value
+            orgDateE = .Range("E6").Value
+        End With
+
+        If orgPath = "" Then
+            errStr = errStr & "観測データパスを入力してください。" & vbCrLf
+        Else
+            If fso.FileExists(orgPath) = False Then
+                errStr = errStr & "観測データパスにアクセスできません。" & vbCrLf
+            End If
+        End If
+        
+        If orgDateS = "" Then
+            errStr = errStr & "週報作成日に日付（開始日）を入力してください。" & vbCrLf
+        ElseIf IsDate(orgDateS) = False Then
+            errStr = errStr & "週報作成日に正しい日付を入力してください。（例：2018/5/7)" & vbCrLf
+        End If
+        
+        If orgDateE = "" Then
+            errStr = errStr & "週報作成日に日付（最終日）を入力してください。" & vbCrLf
+        ElseIf IsDate(orgDateE) = False Then
+            errStr = errStr & "週報作成日に正しい日付を入力してください。（例：2018/5/7)" & vbCrLf
+        End If
+        
+        If errStr <> "" Then
+            MsgBox errStr
+            Exit Sub
+        End If
+        
+        myflag = Select_File(fAr, 0, True, "", "エクセル&csv", "*.xls;*.xlsx;*.xlsm;*.csv", _
+            "現地データを取得するファイルをすべて選択してください。")
+        If myflag = False Then Exit Sub
+        
+        
+        For i = LBound(fAr) To UBound(fAr)
+        
+            readBkName = fso.GetFileName(fAr(i))
+        
+            CloseBookOpen (readBkName)
+            Workbooks.Open Filename:=fAr(i), UpdateLinks:=False, ReadOnly:=True
+        
+            Application.ScreenUpdating = False
+        
+        
+            Call GetMeterData
+            Call WriteMeterData
+            
+            Application.DisplayAlerts = False
+            Workbooks(readBkName).Close
+            Application.DisplayAlerts = True
+        Next i
+        saveFol = ThisWorkbook.Path & "\月報" & Format(orgDateE, "yymmdd")
+        On Error Resume Next
+        MkDir (saveFol)
+        On Error GoTo 0
+        newBkName = Replace(orgBkName, ".xlsx", "")
+        newBkName = Replace(newBkName, ".xls", "")
+        newBkName = Format(orgDateE, "yymmdd") & "胆沢ダム観測データ.xlsx"
+        CloseBookOpen (newBkName)
+        
+        Application.DisplayAlerts = False
+        
+        Workbooks(orgBkName).SaveAs Filename:=saveFol & "\" & newBkName, FileFormat:=51
+        
+        Application.DisplayAlerts = True
+        
+        
+        '2022/05/18
+        '書き込み失敗した計器の表示から、書き込んだ計器の表示に変更
+        
+'        For i = LBound(successStr) To UBound(successStr) - 1
+'            If errStrPaste = "" Then
+'                Exit For
+'            End If
+'            errStrPaste = Replace(errStrPaste, successStr(i), "")
+'
+'        Next i
+        '2022/05/18
+        '書き込んだ計器の表示無効化
+'        successStrMsg = ""
+'        For i = LBound(successStr) To UBound(successStr) - 1
+'            successStrMsg = successStrMsg & successStr(i)
+'
+'        Next i
+        Workbooks(newBkName).Close
+        
+        Application.ScreenUpdating = True
+        ThisWorkbook.Activate
+        
+        '2022/05/18
+        '書き込み失敗した計器の表示から、書き込んだ計器の表示に変更
+        '書き込んだ計器関連の出力を一度取りやめ。
+'        If errStrPaste <> "" Then
+'            MsgBox "以下のデータの貼り付けに失敗しました。データを確認してください" & vbCrLf & errStrPaste
+'        Else
+'            MsgBox "作業が完了しました"
+'        End If
+'        MsgBox "以下のデータを貼り付けました。データを確認してください" & vbCrLf & successStrMsg, , "作業完了"
+        MsgBox "作業が完了しました"
+        Call Shell("Explorer.exe " & saveFol, vbNormalFocus)
+End Sub
+
+Private Sub GetMeterData()
+
+    Dim targetRng As Range
+    Dim i, j As Integer
+        
+        i = 0
+        
+        With Workbooks(readBkName).Worksheets(1)
+            Set targetRng = .Cells(1, 1)
+            Do
+                If targetRng.Row > LIMIT_CELL_ROW Then Exit Do
+                If InStr(targetRng.Value, "ブロックタイトル") > 0 Then
+                    j = 0
+                        
+                    Do
+                        If Replace(targetRng.Offset(3, (1 + j)).Value, " ", "") = "" Then Exit Do
+                        
+                        ReDim Preserve MeterData(0 To i)
+                        
+                        MeterData(i).startDate = targetRng.Offset(4, 0).Value
+                        MeterData(i).Name = targetRng.Offset(3, (1 + j)).Value
+                        If MeterData(i).Name = "積雪" Then MeterData(i).Name = "積雪深"
+                        If MeterData(i).Name = "雨量" Then MeterData(i).Name = "雨量(日雨量0時ｾｯﾄ)"
+                        'データの開始位置を取り込む
+                        Set MeterData(i).dataRng = targetRng.Offset(4, (1 + j))
+                        j = j + 1
+                        i = i + 1
+                    Loop
+                End If
+                Set targetRng = targetRng.End(xlDown)
+            Loop
+        End With
+End Sub
+
+Private Sub WriteMeterData()
+    Const BEGIN_DATA_ROW As Integer = 7
+    Const BEGIN_DATA_COL As Integer = 3
+    Const METER_NAME_ROW As Integer = 4
+    
+    
+    Dim targetDateRow As Long   '2022/05/18 名称変更『targetRowDate→targetDateRow』
+    Dim targetRng As Range
+    
+    Dim Daylist As Variant      '2022/09/29 追加    日付のセル群を配列として取得
+    Dim icnt As Long            '2022/09/29 追加    Daylistのインデックスをカウントする
+    
+    Dim targetDateStr As String '2022/05/18 追加    セルへの参照回数を減らす
+    
+    
+    
+    Dim eRow As Long, eCl As Long
+    
+    
+    Dim i As Integer, j As Integer, k As Integer, l As Integer
+        targetDateRow = 6
+        'check org book
+        orgBkName = fso.GetFileName(orgPath)
+        isOrgOpen = CheckBookOpen(orgBkName)
+        If isOrgOpen = False Then
+            Workbooks.Open Filename:=orgPath, UpdateLinks:=False, ReadOnly:=False
+        End If
+        Set orgSh = Workbooks(orgBkName).Sheets(1)
+        
+        With orgSh
+        
+            If .AutoFilterMode = True Then
+                .AutoFilterMode = False
+            End If
+            
+            eRow = .Range("A" & .Rows.Count).End(xlUp).Row
+            eCl = .Cells(METER_NAME_ROW, .Columns.Count).End(xlToLeft).Column
+            
+            '2022/0929 データの貼り付け先の変更
+            targetDateStr = Format(CDate(orgDateS), "yyyy/mm/dd hh:nn")
+            Daylist = .Range(.Cells(7, 1), .Cells(eRow, 1))
+            
+            icnt = 1
+            For Each v In Daylist
+                If Format(CDate(v), "yyyy/mm/dd hh:nn") = targetDateStr Then
+                    targetDateRow = targetDateRow + icnt
+                End If
+                icnt = icnt + 1
+            Next v
+            If targetDateRow < 6 Then
+                MsgBox orgBkName & ":" & orgSh.Name & ":" & targetDateStr & "の日付が見つかりませんでした。データを確認してください。"
+                Application.ScreenUpdating = True
+                End
+            End If
+            
+            
+            '入力するデータの選択
+            For i = BEGIN_DATA_COL To eCl
+                '参照するデータの選択
+                For j = LBound(MeterData) To UBound(MeterData)
+'                    tstx = .Cells(METER_NAME_ROW, i).Value
+                    If .Cells(METER_NAME_ROW, i).Value = MeterData(j).Name Then
+                    
+                        '2022/09/29:測定開始日は月報作成範囲の開始日時にするためループ外に移動した
+                        '測定開始日の取得
+                        
+                        '対象機器データの入力位置
+                        'targetDateRow = .Cells(.Rows.Count, i).End(xlUp).Offset(1, 0).Row
+                        
+                        '2022/09/29
+                        'ループ外に移動
+                        '2022/05/18
+                        '最終行の23時間前のデータから上書きするように変更
+                        'targetDateRow = .Cells(.Rows.Count, i).End(xlUp).Offset(1, 0).Row - 24
+                        
+                        '2022/09/29
+                        'ループ外に移動
+                        '2022/05/18
+                        '貼り付け対象の日付時刻を文字列に変換
+                        'targetDateStr = Format(CDate(orgSh.Cells(targetDateRow, 1).Value), "yyyy/mm/dd hh:nn")
+                        
+                        Workbooks(readBkName).Worksheets(1).Activate
+                        
+                        '取り込むデータ範囲の設定
+                        With MeterData(j).dataRng
+                            For k = 0 To (.End(xlDown).Row - .Row)
+'                                tst1 = Workbooks(readBkName).Worksheets(1).Cells(.Offset(k, 0).Row, 1).Value
+'                                tst2 = orgSh.Cells(targetDateRow, 1).Value
+'                                tst3 = CStr(CDate(Workbooks(readBkName).Worksheets(1).Cells(.Offset(k, 0).Row, 1).Value))
+                                If k = 360 Then
+                                    k = k
+                                End If
+                                
+
+                                If Format(CDate(Workbooks(readBkName).Worksheets(1).Cells(.Offset(k, 0).Row, 1).Value), "yyyy/mm/dd hh:nn") = targetDateStr Then
+                                    Set targetRng = .Offset(k, 0)
+                                    Exit For
+                                End If
+                                
+                            Next k
+                            If k > (.End(xlDown).Row - .Row) Then
+'                                MsgBox readBkName & ":" & MeterData(j).Name & ":" & CDate(MeterData(j).startDate) & "-" & CDate(Workbooks(readBkName).Worksheets(1).Cells(.Offset(k - 1, 0).Row, 1).Value) & "間の日付が" & vbCrLf _
+'                                     & orgBkName & ":" & orgSh.Name & ":" & targetDateStr & "よりも下の行で見つかりませんでした。" & vbCrLf _
+'                                     & "データを確認してください"
+                                MsgBox readBkName & vbCrLf _
+                                     & "計器:" & MeterData(j).Name & vbCrLf _
+                                     & "『" & targetDateStr & "』のデータが見つかりません。" & vbCrLf _
+                                     & "対象計器の取得した日付範囲は以下の通りです。" & vbCrLf _
+                                     & "『" & Format(CDate(MeterData(j).startDate), "yyyy/mm/dd hh:nn") & "』-『" & Format(CDate(Workbooks(readBkName).Worksheets(1).Cells(.Offset(k - 1, 0).Row, 1).Value), "yyyy/mm/dd hh:nn") & "』" & vbCrLf _
+                                     & "計器データ及び入力した日付範囲を確認してください。"
+
+                                Application.ScreenUpdating = True
+                                End
+                            End If
+                        End With
+                        
+                        Set MeterData(j).dataRng = Workbooks(readBkName).Worksheets(1).Range(targetRng, MeterData(j).dataRng.End(xlDown))
+                        
+    
+                        
+                        Workbooks(readBkName).Worksheets(1).Activate
+                        MeterData(j).dataRng.Activate '確認用
+                        MeterData(j).dataRng.Copy
+                        .Activate
+                        .Cells(targetDateRow, i).Activate '確認用
+                        .Cells(targetDateRow, i).PasteSpecial (xlPasteValues)
+                        
+'2022/09/29 "E+"を含む全てのデータを無効値として削除するように変更
+'2018/06/18 "E+"を含む最終データ以降の無効値を削除するfor分を追加
+                        For l = 1 To MeterData(j).dataRng.Rows.Count
+                            If InStr(.Cells(targetDateRow + MeterData(j).dataRng.Rows.Count - l, i), "E+") > 0 And (targetDateRow + MeterData(j).dataRng.Rows.Count - l) > BEGIN_DATA_ROW Then
+                                .Cells(targetDateRow + MeterData(j).dataRng.Rows.Count - l, i).Value = ""
+                            End If
+'                            If InStr(.Cells(.Rows.Count, i).End(xlUp).Value, "E+") > 0 And .Cells(.Rows.Count, i).End(xlUp).Row > BEGIN_DATA_ROW Then
+'                                .Cells(.Rows.Count, i).End(xlUp).Value = ""
+'                            Else
+'
+'                                Exit For
+'                            End If
+                        Next l
+                        
+                        Exit For
+                    End If
+                Next j
+                '作業の成否を記録
+                If j > UBound(MeterData) Then
+                
+                    If .Cells(4, i) <> "" And InStr(.Cells(4, i).Value, "(NS)") = 0 _
+                        And InStr(.Cells(4, i).Value, "(EW)") = 0 _
+                        And InStr(.Cells(4, i).Value, "四捨五入") = 0 _
+                    Then
+                        
+                        errStrPaste = errStrPaste & .Cells(4, i).Value & vbCrLf
+                    End If
+                Else
+                
+                    successStr(UBound(successStr)) = .Cells(4, i).Value & vbCrLf
+                    ReDim Preserve successStr(0 To (UBound(successStr) + 1))
+                    
+
+                End If
+                
+            Next i
+            
+        End With
+End Sub
+
+
+
+
